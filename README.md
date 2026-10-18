@@ -1,5 +1,5 @@
 # duality
-Open-Source frida-gadget injector for (almost) all apk's
+An open-source Android APK patcher/instrumentation toolkit powered by Frida Gadget.
 
 # HOW TO USE:
 We will go step by step for this tutorial.

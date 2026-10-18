@@ -1,6 +1,8 @@
 
 package com.thaz.duality
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
@@ -9,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -174,13 +177,8 @@ private fun DualityApp() {
                     log("EXPORT SUCCESS: ${source.name}")
                     log("Exported size: ${formatBytes(source.length())}")
                 } catch (e: Exception) {
-                    val details = generateSequence<Throwable>(e) { it.cause }
-                        .take(10)
-                        .joinToString(" | ") { error ->
-                            "${error.javaClass.simpleName}: ${error.message}"
-                        }
-
-                    log("PATCH ERROR: $details")
+                    val details = formatExceptionChain(e)
+                    log("EXPORT ERROR: $details")
                 } finally {
                     isLoading = false
                 }
@@ -593,9 +591,7 @@ private fun DualityApp() {
                                             )
                                         } catch (e: Exception) {
                                             log(
-                                                "PATCH ERROR: " +
-                                                        (e.message
-                                                            ?: e.javaClass.simpleName)
+                                                "PATCH ERROR: " + formatExceptionChain(e)
                                             )
                                         } finally {
                                             isLoading = false
@@ -702,6 +698,25 @@ private fun DualityApp() {
             Spacer(modifier = Modifier.weight(1f))
 
             TextButton(
+                onClick = {
+                    val clipboard = context.getSystemService(
+                        Context.CLIPBOARD_SERVICE
+                    ) as ClipboardManager
+                    val textToCopy = logs.joinToString("\n")
+                    clipboard.setPrimaryClip(
+                        ClipData.newPlainText("Duality terminal logs", textToCopy)
+                    )
+                    Toast.makeText(
+                        context,
+                        if (textToCopy.isBlank()) "Terminal is empty" else "Terminal logs copied",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            ) {
+                Text("Copy Logs")
+            }
+
+            TextButton(
                 onClick = { logs = emptyList() }
             ) {
                 Text("Clear")
@@ -726,6 +741,22 @@ private fun DualityApp() {
             }
         }
     }
+}
+
+private fun formatExceptionChain(error: Throwable): String {
+    val seen = java.util.Collections.newSetFromMap(
+        java.util.IdentityHashMap<Throwable, Boolean>()
+    )
+    val details = mutableListOf<String>()
+    var current: Throwable? = error
+
+    while (current != null && seen.add(current) && details.size < 12) {
+        val message = current.message?.takeIf { it.isNotBlank() } ?: "(no message)"
+        details.add(current.javaClass.name + ": " + message)
+        current = current.cause
+    }
+
+    return details.joinToString(" | ")
 }
 
 @Composable

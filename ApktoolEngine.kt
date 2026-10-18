@@ -13,7 +13,8 @@ data class ApktoolBuildResult(
     val packageName: String,
     val decodedDirectory: File,
     val outputApk: File,
-    val outputSizeBytes: Long
+    val outputSizeBytes: Long,
+    val gadgetInjection: FridaGadgetManager.InjectionResult?
 )
 
 object ApktoolEngine {
@@ -21,10 +22,15 @@ object ApktoolEngine {
     fun decodeAndRebuild(
         context: Context,
         packageName: String,
-        sourceApk: File
+        sourceApk: File,
+        gadgetSo: File? = null,
+        gadgetAbi: String? = null
     ): ApktoolBuildResult {
         require(sourceApk.isFile && sourceApk.canRead()) {
             "The source APK cannot be read."
+        }
+        require((gadgetSo == null) == (gadgetAbi == null)) {
+            "Both the Gadget library and ABI must be supplied together."
         }
 
         val root = File(
@@ -78,6 +84,24 @@ object ApktoolEngine {
             "Apktool did not create the decoded directory."
         }
 
+        var gadgetInjection: FridaGadgetManager.InjectionResult? = null
+        if (gadgetSo != null && gadgetAbi != null) {
+            val targetAbis = FridaGadgetManager.inspectApk(inputApk)
+                .map { it.abi }
+                .toSet()
+
+            require(targetAbis.isEmpty() || gadgetAbi in targetAbis) {
+                "Gadget ABI $gadgetAbi does not match the APK's native ABIs: " +
+                    targetAbis.joinToString().ifBlank { "(none detected)" }
+            }
+
+            gadgetInjection = FridaGadgetManager.stageGadget(
+                decodedDirectory = decodedDirectory,
+                gadgetSo = gadgetSo,
+                abi = gadgetAbi
+            )
+        }
+
         // Rebuild the decoded project into an APK.
         ApkBuilder(decodedDirectory, config).build(outputApk)
 
@@ -96,7 +120,8 @@ object ApktoolEngine {
             packageName = packageName,
             decodedDirectory = decodedDirectory,
             outputApk = outputApk,
-            outputSizeBytes = outputApk.length()
+            outputSizeBytes = outputApk.length(),
+            gadgetInjection = gadgetInjection
         )
     }
 }

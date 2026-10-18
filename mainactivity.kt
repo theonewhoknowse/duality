@@ -1174,6 +1174,21 @@ private fun displayName(
     }
 }
 
+private fun sha256File(file: File): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    file.inputStream().use { input ->
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            digest.update(buffer, 0, count)
+        }
+    }
+    return digest.digest().joinToString("") {
+        "%02x".format(it.toInt() and 0xFF)
+    }
+}
+
 private fun formatBytes(bytes: Long): String {
     if (bytes < 1024) return "$bytes B"
 

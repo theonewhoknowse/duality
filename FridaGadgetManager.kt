@@ -80,6 +80,53 @@ object FridaGadgetManager {
         inspectApk(apkFile).firstOrNull()?.abi
 
     /**
+     * Detects the ABI from an ELF shared-library header.
+     */
+    fun detectAbi(gadgetSo: File): String {
+        require(gadgetSo.isFile && gadgetSo.canRead() && gadgetSo.length() > 20L) {
+            "The selected Gadget file is missing, unreadable, or too small."
+        }
+
+        FileInputStream(gadgetSo).use { input ->
+            val header = ByteArray(20)
+            var offset = 0
+            while (offset < header.size) {
+                val count = input.read(header, offset, header.size - offset)
+                if (count < 0) break
+                offset += count
+            }
+            require(offset == header.size) {
+                "Could not read the ELF architecture header."
+            }
+            require(
+                header[0] == 0x7F.toByte() &&
+                    header[1] == 'E'.code.toByte() &&
+                    header[2] == 'L'.code.toByte() &&
+                    header[3] == 'F'.code.toByte()
+            ) {
+                "Selected file is not an ELF shared library."
+            }
+            require((header[5].toInt() and 0xFF) == 1) {
+                "Only little-endian Android ELF libraries are supported."
+            }
+
+            val elfClass = header[4].toInt() and 0xFF
+            val machine = (header[18].toInt() and 0xFF) or
+                ((header[19].toInt() and 0xFF) shl 8)
+
+            return when {
+                machine == 40 && elfClass == 1 -> "armeabi-v7a"
+                machine == 183 && elfClass == 2 -> "arm64-v8a"
+                machine == 3 && elfClass == 1 -> "x86"
+                machine == 62 && elfClass == 2 -> "x86_64"
+                else -> throw IllegalArgumentException(
+                    "Unsupported Gadget ELF architecture (machine=$machine, class=$elfClass)."
+                )
+            }
+        }
+    }
+
+    /**
      * Copies a verified ELF shared library into the decoded Apktool project.
      * gadgetSo must be the official Frida Gadget binary for the chosen ABI.
      *

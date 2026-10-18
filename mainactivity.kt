@@ -125,6 +125,14 @@ private fun DualityApp() {
         mutableStateOf<File?>(null)
     }
 
+    var gadgetSoFile by remember {
+        mutableStateOf<File?>(null)
+    }
+
+    var gadgetAbi by remember {
+        mutableStateOf<String?>(null)
+    }
+
     var logs by remember {
         mutableStateOf(
             listOf(
@@ -133,13 +141,63 @@ private fun DualityApp() {
                 "Workspace support enabled.",
                 "Apktool decode/rebuild engine connected.",
                 "APK signing engine connected.",
-                "Frida Gadget injection is not implemented yet."
+                "Frida Gadget manager connected.",
+                "Choose the official libfrida-gadget.so for your target ABI."
             )
         )
     }
 
     fun log(message: String) {
         logs = (logs + message).takeLast(200)
+    }
+
+    val gadgetPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) {
+            log("Gadget selection cancelled.")
+        } else {
+            scope.launch {
+                isLoading = true
+                try {
+                    val stagedFile = withContext(Dispatchers.IO) {
+                        val destination = File(
+                            context.cacheDir,
+                            "frida-gadget-selected.so"
+                        )
+                        val input = context.contentResolver.openInputStream(uri)
+                            ?: throw IllegalStateException(
+                                "Could not open the selected Gadget file."
+                            )
+                        input.use { source ->
+                            destination.outputStream().use { output ->
+                                source.copyTo(output)
+                            }
+                        }
+                        require(destination.isFile && destination.length() > 20L) {
+                            "The selected file is empty or too small."
+                        }
+                        destination
+                    }
+
+                    val detectedAbi = withContext(Dispatchers.IO) {
+                        FridaGadgetManager.detectAbi(stagedFile)
+                    }
+                    gadgetSoFile = stagedFile
+                    gadgetAbi = detectedAbi
+                    log("GADGET READY: ${stagedFile.name}")
+                    log("Detected Gadget ABI: $detectedAbi")
+                    log("Gadget SHA-256: ${sha256File(stagedFile)}")
+                    log("NOTE: Startup loading must be integrated before Gadget can run.")
+                } catch (e: Exception) {
+                    gadgetSoFile = null
+                    gadgetAbi = null
+                    log("GADGET ERROR: ${formatExceptionChain(e)}")
+                } finally {
+                    isLoading = false
+                }
+            }
+        }
     }
 
     val exportPicker = rememberLauncherForActivityResult(
@@ -290,6 +348,33 @@ private fun DualityApp() {
                 modifier = Modifier.weight(1f)
             ) {
                 Text("Choose APK")
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedButton(
+                onClick = {
+                    gadgetPicker.launch(arrayOf("*/*"))
+                },
+                enabled = !isLoading,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Choose Gadget .so")
+            }
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    gadgetSoFile?.name ?: "No Gadget selected",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    gadgetAbi ?: "ABI not detected",
+                    style = MaterialTheme.typography.labelSmall
+                )
             }
         }
 
@@ -495,8 +580,12 @@ private fun DualityApp() {
                                                 "required. Found ${sourcePaths.size}. " +
                                                 "Split APK support is not implemented."
                                     )
+                                } else if (gadgetSoFile == null || gadgetAbi == null) {
+                                    log("PATCH BLOCKED: Choose a valid Frida Gadget .so first.")
                                 } else {
                                     val sourceApk = File(sourcePaths.single())
+                                    val selectedGadget = gadgetSoFile!!
+                                    val selectedGadgetAbi = gadgetAbi!!
 
                                     scope.launch {
                                         isLoading = true
@@ -507,10 +596,11 @@ private fun DualityApp() {
                                                         "${app.packageName}..."
                                             )
                                             log("Source: ${sourceApk.name}")
+                                            log("Gadget ABI: $selectedGadgetAbi")
 
-                                            // Stage 1: Decode and rebuild.
+                                            // Stage 1: Decode, stage Gadget, and rebuild.
                                             log(
-                                                "STAGE 1/3: Decoding APK..."
+                                                "STAGE 1/3: Decoding APK, staging Gadget, and rebuilding..."
                                             )
 
                                             val buildResult = withContext(
@@ -519,7 +609,9 @@ private fun DualityApp() {
                                                 ApktoolEngine.decodeAndRebuild(
                                                     context = context,
                                                     packageName = app.packageName,
-                                                    sourceApk = sourceApk
+                                                    sourceApk = sourceApk,
+                                                    gadgetSo = selectedGadget,
+                                                    gadgetAbi = selectedGadgetAbi
                                                 )
                                             }
 
@@ -528,6 +620,15 @@ private fun DualityApp() {
                                                 "Decoded directory: " +
                                                         buildResult.decodedDirectory.name
                                             )
+                                            buildResult.gadgetInjection?.let { injection ->
+                                                log("GADGET STAGED SUCCESS")
+                                                log("ABI: ${injection.abi}")
+                                                log("Library: ${injection.gadgetLibrary.name}")
+                                                log("Library SHA-256: ${injection.sha256}")
+                                                log("Library size: ${formatBytes(injection.sizeBytes)}")
+                                                log("CONFIG: ${injection.configFile.name}")
+                                                log("WARNING: Startup loader is not installed yet; Gadget will not run until that hook is added.")
+                                            }
                                             log("REBUILD SUCCESS")
                                             log(
                                                 "Unsigned APK: " +
@@ -579,8 +680,7 @@ private fun DualityApp() {
                                                 "STAGE 3/3: Ready to export."
                                             )
                                             log(
-                                                "NOTE: Frida Gadget injection " +
-                                                        "is not implemented yet."
+                                                "NOTE: Gadget is staged in the APK, but automatic startup loading is not implemented yet."
                                             )
 
                                             pendingOutputApk =
@@ -599,7 +699,10 @@ private fun DualityApp() {
                                     }
                                 }
                             },
-                            enabled = !isLoading && app.apkPaths.size == 1,
+                            enabled = !isLoading &&
+                                app.apkPaths.size == 1 &&
+                                gadgetSoFile != null &&
+                                gadgetAbi != null,
                             modifier = Modifier.weight(1f)
                         ) {
                             Text("Patch")
